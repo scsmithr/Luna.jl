@@ -1,0 +1,7 @@
+name = "Luna"
+uuid = "06eee4d4-0b2b-49ae-b169-4d7067b18fa3"
+authors = ["Sean Smith <scsmithr@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"

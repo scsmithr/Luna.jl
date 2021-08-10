@@ -1,0 +1,3 @@
+module Luna
+
+end # module
