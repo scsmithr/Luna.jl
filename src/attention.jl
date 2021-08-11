@@ -4,7 +4,7 @@ using Flux: glorot_uniform
 """
     Attention
 
-A traditional attention mechanism.
+A traditional scaled dot product attention mechanism.
 """
 struct Attention{F, M<:AbstractMatrix}
     Wq::M
@@ -33,6 +33,8 @@ function (a::Attention)(X::M, C::M) where {T, M<:AbstractMatrix{T}}
     return A * V
 end
 
+elum(X::AbstractArray) = elu.(X)
+
 struct FFN
     in::Dense
     out::Dense
@@ -47,31 +49,82 @@ end
 
 (ffn::FFN)(X::AbstractMatrix) = ffn.out(ffn.in(X))
 
+"""
+    LunaAttention
+
+A Luna attention layer composed to two Attention layers with linear efficiency.
+"""
 struct LunaAttention
     pack::Attention
     unpack::Attention
-    packnorm::LayerNorm
-    unpacknorm::LayerNorm
-    ffn::FFN
-    ffnorm::LayerNorm
 end
 
 Flux.@functor LunaAttention
 
-function LunaAttention(d::Int, h::Int)
-    return LunaAttention(Attention(d, identity), # TODO: elu
-                         Attention(d, softmax),
-                         LayerNorm(d),
-                         LayerNorm(d),
-                         FFN(d, h),
-                         LayerNorm(d))
+LunaAttention(d::Int) = LunaAttention(Attention(d, elum),
+                                      Attention(d, softmax))
+
+function (la::LunaAttention)(X::M, P::M, C::M) where {T, M<:AbstractMatrix{T}}
+    Yp = la.pack(P, C)
+    Yx = la.unpack(X, Yp)
+    return (Yp, Yx)
 end
 
-function (a::LunaAttention)(X::M, P::M, C::M) where {T, M<:AbstractMatrix{T}}
-    Yp = a.pack(P, C)
-    Yx = a.unpack(X, Yp)
-    Pa = a.packnorm(Yp + P)
-    Xa = a.unpacknorm(Yx + X)
-    X_out = a.ffnorm( a.ffn(Xa)+Xa )
+struct LunaEncoderBlock
+    attn::LunaAttention
+    linnorm::LayerNorm
+    attnnorm::LayerNorm
+    ffn::FFN
+    ffnorm::LayerNorm
+end
+
+Flux.@functor LunaEncoderBlock
+
+function LunaEncoderBlock(d::Int, h::Int)
+    return LunaEncoderBlock(LunaAttention(d),
+                            LayerNorm(d),
+                            LayerNorm(d),
+                            FFN(d, h),
+                            LayerNorm(d))
+end
+
+function (e::LunaEncoderBlock)(X::M, P::M) where {T, M<:AbstractMatrix{T}}
+    C = X
+    (Yp, Yx) = e.attn(X, P, C)
+    Pa = e.linnorm(Yp + P)
+    Xa = e.attnnorm(Yx + X)
+    X_out = e.ffnorm(e.ffn(Xa) + Xa)
     return (X_out, Pa)
+end
+
+struct LunaDecoderBlock
+    maskattn::Attention # TODO: Proper mask
+    masknorm::LayerNorm
+    attn::LunaAttention
+    linnorm::LayerNorm
+    attnnorm::LayerNorm
+    ffn::FFN
+    ffnorm::LayerNorm
+end
+
+Flux.@functor LunaDecoderBlock
+
+function LunaDecoderBlock(d::Int, h::Int)
+    return LunaDecoderBlock(Attention(d, softmax),
+                            LayerNorm(d),
+                            LunaAttention(d),
+                            LayerNorm(d),
+                            LayerNorm(d),
+                            FFN(d, h),
+                            LayerNorm(d))
+end
+
+function (d::LunaDecoderBlock)(X::M, P::M, E::M) where {T, M<:AbstractMatrix{T}}
+    C = X
+    X_m = d.maskattn(X, C)
+    X_n = d.masknorm(X_m)
+    (Yp, Yx) = d.attn(X_n, P, E)
+    Pa = d.linnorm(Yp + P)
+    Xa = d.linnorm(Yx + X_n)
+    X_out = d.ffnorm(e.ffn(Xa) + Xa)
 end
